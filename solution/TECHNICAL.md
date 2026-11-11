@@ -1,6 +1,6 @@
 # Technical document
 
-**Team:** TODO, the team name exactly as registered
+**Team:** Bodring
 **Challenge:** More than a Hack 2027, Phase 1, ball possession
 
 ## Approach
