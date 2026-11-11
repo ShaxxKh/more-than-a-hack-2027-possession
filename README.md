@@ -1,3 +1,7 @@
+> **Team solution.** This is a copy of the organisers' starter kit with our entry added in
+> [`solution/`](solution/README.md). The method is described in
+> [`solution/TECHNICAL.md`](solution/TECHNICAL.md). Everything below is the organisers' original README.
+
 # More than a Hack 2027 — Phase 1: Ball Possession
 
 **Organised by [Metrica Sports](https://metrica-sports.com), [FC Barcelona](https://www.fcbarcelona.com)

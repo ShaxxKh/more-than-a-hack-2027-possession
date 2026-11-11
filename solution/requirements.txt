@@ -1,0 +1,4 @@
+# Exact versions the submission file was generated with, under Python 3.15.2.
+# hmm_possession.py needs numpy only; pandas is used by the scorer and by tune_on_sample_games.py.
+numpy==2.5.4
+pandas==3.1.1
