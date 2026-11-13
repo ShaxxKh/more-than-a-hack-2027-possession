@@ -1,7 +1,8 @@
 # Our solution
 
 A three-state possession model (home, away, dead ball) decoded with Viterbi. The method, the data
-it uses and its limits are described in [TECHNICAL.md](TECHNICAL.md).
+it uses and its limits are described in [TECHNICAL.md](TECHNICAL.md). What we tried on the way,
+including what we measured and dropped, is in [EXPERIMENTS.md](EXPERIMENTS.md).
 
 ## Reproduce the submission file
 
