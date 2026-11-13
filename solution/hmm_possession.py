@@ -54,6 +54,32 @@ DISTANCE_SCALE_M = 8.0  # metres of distance advantage worth one unit of log evi
 MAX_DISTANCE_M = 30.0  # beyond this a player is simply "far", however far
 VISIBLE_BALL_DEAD_COST = 0.5  # a visible ball is mild evidence that play is alive
 
+# What a visible ball can say about a stoppage. The distance evidence alone cannot: on a visible
+# frame D is always VISIBLE_BALL_DEAD_COST behind the better team, so a ball lying on the corner
+# spot goes to whoever stands nearest. Two things separate a stopped ball from a live one.
+#
+# It is off the pitch. OUTSIDE is measured in metres beyond the nearest line.
+#
+# It is not moving. A frame is still when the ball stays within STILL_RADIUS_M of where it is now
+# for STILL_WINDOW_S around it, and what counts is how long that lasts. 0.3 m is the tightest of
+# the radii we measured on the sample games and the one a live ball satisfies least often there:
+# for a second or more on 0.7 to 1.9% of live frames, against 1.7 to 3.9% at 0.5 m.
+STILL_RADIUS_M = 0.3
+STILL_WINDOW_S = 1.0
+# When the two count. Beyond 2 m a live ball is off the pitch on at most 0.3% of frames in the
+# sample games; nearer the line it is tracking error, or a ball still in play. Stillness has to
+# last 3 s: in sample games 1 and 2, of the 8 such stretches that the event labels call live, 7
+# end at a goal kick and the other at the end of a half, whereas of the 13 lasting 1 to 2 s
+# 6 end in an ordinary pass -- a player standing on the ball.
+OUTSIDE_MARGIN_M = 2.0
+STILL_MIN_S = 3.0
+# What they are worth, per frame. D starts VISIBLE_BALL_DEAD_COST behind, and a stoppage inside a
+# possession costs about 14 to enter and leave, so at 1.0 a ball off the pitch has to stay there
+# for about 1.1 s before the model believes it: 14 / (25 * (1.0 - 0.5)). A high ball is drawn off
+# the pitch for less than that, because it is projected onto the ground beyond where it really is.
+# On the sample games the value makes no difference between 0.75 and 2.0 once stillness needs 3 s.
+VISIBLE_DEAD_EVIDENCE = 1.0
+
 # How a missing ball counts towards a stoppage: nothing up to GAP_NEUTRAL_S, then a linear ramp to
 # GAP_MAX_DEAD_EVIDENCE per frame at GAP_FULL_S. With the priors above, a gap has to reach about
 # 5 s before it can split a possession. Judgement calls, subject to the same rule as the priors.
@@ -128,6 +154,46 @@ def missing_ball_log_evidence(gap_seconds):
     out = np.zeros((len(gap_seconds), 3))
     out[:, D] = ramp * GAP_MAX_DEAD_EVIDENCE
     return out
+
+
+def visible_dead_features(ball, pitch, fps):
+    """(outside_m, still_s) for every frame, from the ball track alone.
+
+    ball is (n, 2), normalised 0-1, NaN where there is no ball; both outputs are 0 there.
+
+      outside_m  metres the ball is beyond the nearest pitch line; 0 while it is on the pitch
+      still_s    length in seconds of the unbroken stretch of still frames this frame is part
+                 of; 0 if the ball is moving
+
+    A frame is still when every ball position seen within STILL_WINDOW_S / 2 either side of it
+    is within STILL_RADIUS_M of the position on that frame.
+    """
+    metres = ball * np.array(pitch)
+    seen = ~np.isnan(metres[:, 0])
+    length, width = pitch
+
+    beyond = np.stack((-metres[:, 0], metres[:, 0] - length, -metres[:, 1], metres[:, 1] - width))
+    outside_m = np.where(seen, np.nan_to_num(beyond).max(axis=0).clip(min=0.0), 0.0)
+
+    furthest = np.zeros(len(metres))
+    for shift in range(1, int(round(STILL_WINDOW_S * fps / 2.0)) + 1):
+        apart = np.nan_to_num(np.hypot(*(metres[shift:] - metres[:-shift]).T))  # unseen: no say
+        furthest[:-shift] = np.maximum(furthest[:-shift], apart)
+        furthest[shift:] = np.maximum(furthest[shift:], apart)
+    still_s = gap_lengths(seen & (furthest < STILL_RADIUS_M)) / float(fps)
+    return outside_m, still_s
+
+
+def visible_ball_dead_evidence(outside_m, still_s):
+    """Log evidence for D, per frame, from where a visible ball is and how long it has not moved.
+
+    outside_m and still_s are the 1-D arrays visible_dead_features returns. Return an array of
+    the same length: what to add to D's log evidence on each frame. 0 means no opinion.
+    """
+    # One fixed amount whichever sign is present. A ball resting off the pitch is one stoppage,
+    # not two, so the signs do not add up.
+    stopped = (outside_m > OUTSIDE_MARGIN_M) | (still_s >= STILL_MIN_S)
+    return np.where(stopped, VISIBLE_DEAD_EVIDENCE, 0.0)
 
 
 def log_emissions(distances, fps, missing_evidence=missing_ball_log_evidence):
@@ -254,26 +320,29 @@ if __name__ == '__main__':
                         help="tracking only, without the Smart Tagging restarts")
     parser.add_argument("--no-broadcast", action="store_true",
                         help="tactical ball only, without positions from the broadcast tracking")
+    parser.add_argument("--no-visible-dead", action="store_true",
+                        help="a visible ball never counts towards a stoppage")
     args = parser.parse_args()
 
     meta_path, raw_path = require(["atd_meta", "atd_raw"], GAME)
     n_frames = source_frames("tactical", GAME)
     pitch = GAMES[GAME]["pitch"]
     team_of_track = team_of_each_track(meta_path)
+    fps = GAMES[GAME]["fps"]
+    ball, players = broadcast_ball.read_tracks(raw_path, n_frames, len(team_of_track))
 
     ball_fill = None
     if not args.no_broadcast:
         other_meta, other_raw, other_homography = require(
             ["atd_meta", "atd_raw", "homography"], GAME, source="broadcast")
         other_team = team_of_each_track(other_meta)
-        ball, players = broadcast_ball.read_tracks(raw_path, n_frames, len(team_of_track))
         other_ball, other_players = broadcast_ball.read_tracks(
             other_raw, source_frames("broadcast", GAME), len(other_team))
         ball_fill, report = broadcast_ball.fill_from_broadcast(
             ball, players, team_of_track, other_ball, other_players, other_team,
             broadcast_ball.read_valid(other_homography),
-            [(first, last) for _, first, last in half_video_blocks(GAME)], pitch,
-            GAMES[GAME]["fps"])
+            [(first, last) for _, first, last in half_video_blocks(GAME)], pitch, fps)
+        ball = np.where(np.isnan(ball), ball_fill, ball)
         for block in report:
             print("frames {first}-{last}: tactical frame = broadcast frame + {offset}, agreeing on "
                   "{agreement:.0%} of shared ball frames; kept {kept} of {candidates} positions"
@@ -281,11 +350,13 @@ if __name__ == '__main__':
 
     distances = nearest_by_team(raw_path, team_of_track, n_frames, pitch, ball_fill)
 
-    extra = None
+    extra = np.zeros((n_frames, 3))
+    if not args.no_visible_dead:
+        extra[:, D] += visible_ball_dead_evidence(*visible_dead_features(ball, pitch, fps))
     if not args.no_tags:
         events = load_smart_tagging.load(GAME)
         codes = tag_team_codes([e["tags"].get("Team") for e in events], team_names(meta_path)[0])
-        extra = restart_log_evidence(events, codes, n_frames)
+        extra += restart_log_evidence(events, codes, n_frames)
         n_set_pieces = sum((e["code"] or "").strip().lower() == SET_PIECE_CODE for e in events)
         print("using {} Smart Tagging set pieces as restart evidence".format(n_set_pieces))
 

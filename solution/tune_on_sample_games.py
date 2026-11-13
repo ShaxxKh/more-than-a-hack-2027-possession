@@ -50,6 +50,9 @@ MISSING_MEANS_DEAD = 1.0
 
 DISTANCE_SCALES_M = (2.0, 4.0, 8.0, 12.0, 16.0)
 CONTROL_RADII_M = (None, 5.0, 3.0, 2.0, 1.5, 1.0)  # None = no radius, distance always counts
+OUTSIDE_MARGINS_M = (1.0, 2.0)
+STILL_MINIMA_S = (1.0, 2.0, 3.0)
+VISIBLE_DEAD_EVIDENCES = (0.75, 1.0, 1.5, 2.0)
 
 
 def fetch(folder):
@@ -77,7 +80,10 @@ def nearest_two(players, team_is_home, ball):
 
 
 def distances_csv(home_path, away_path):
-    """Games 1 and 2: one CSV per team, three header rows, the ball in the last two columns."""
+    """Games 1 and 2: one CSV per team, three header rows, the ball in the last two columns.
+
+    Returns (distances, ball), the ball as (n, 2) normalised positions.
+    """
     home = pd.read_csv(home_path, skiprows=3, header=None).values[:, 3:].astype(np.float64)
     away = pd.read_csv(away_path, skiprows=3, header=None).values[:, 3:].astype(np.float64)
     ball = home[:, -2:]
@@ -85,7 +91,7 @@ def distances_csv(home_path, away_path):
     away_players = away[:, :-2].reshape(len(away), -1, 2)
     players = np.concatenate((home_players, away_players), axis=1)
     is_home = np.arange(players.shape[1]) < home_players.shape[1]
-    return nearest_two(players, is_home, ball)
+    return nearest_two(players, is_home, ball), ball
 
 
 def distances_epts(meta_path, raw_path):
@@ -114,7 +120,7 @@ def distances_epts(meta_path, raw_path):
                 slots.append(player)
         rows_of_spec = (frames >= int(spec.get("startFrame"))) & (frames <= int(spec.get("endFrame")))
         is_home[rows_of_spec] = [team_of_player[p] == home_id for p in slots]
-    return nearest_two(players, is_home, ball)
+    return nearest_two(players, is_home, ball), ball
 
 
 def labels_from_events(events, n_frames):
@@ -140,7 +146,7 @@ def labels_from_events(events, n_frames):
 
 
 def load_games(folder):
-    """[(name, distances, gt_codes, blocks)] for the three sample games."""
+    """[(name, distances, gt_codes, blocks, ball)] for the three sample games."""
     def path(name):
         return os.path.join(folder, name)
 
@@ -148,14 +154,15 @@ def load_games(folder):
     for number in (1, 2, 3):
         name = "Sample_Game_{}".format(number)
         if number < 3:
-            distances = distances_csv(path(name + "_RawTrackingData_Home_Team.csv"),
-                                      path(name + "_RawTrackingData_Away_Team.csv"))
+            distances, ball = distances_csv(path(name + "_RawTrackingData_Home_Team.csv"),
+                                            path(name + "_RawTrackingData_Away_Team.csv"))
             events = mp.read_events(path(name + "_RawEventsData.csv"))
         else:
-            distances = distances_epts(path(name + "_metadata.xml"), path(name + "_tracking.txt"))
+            distances, ball = distances_epts(path(name + "_metadata.xml"),
+                                             path(name + "_tracking.txt"))
             events = mp.read_events(path(name + "_events.json"))
         codes, blocks = labels_from_events(events, len(distances))
-        games.append((name, distances, codes, blocks))
+        games.append((name, distances, codes, blocks, ball))
     return games
 
 
@@ -165,16 +172,39 @@ def missing_is_dead(gap_seconds):
     return out
 
 
-def score(game, distance_scale, control_radius):
-    """The official metrics for one game at one setting."""
-    _, distances, gt_codes, blocks = game
-    saved = hp.DISTANCE_SCALE_M, hp.CONTROL_RADIUS_M
+def score(game, distance_scale, control_radius, visible_dead=None):
+    """The official metrics for one game at one setting.
+
+    visible_dead, if given, is (margin m, minimum still s, evidence): the visible-ball stoppage
+    evidence is added with those settings. None leaves it out.
+    """
+    _, distances, gt_codes, blocks, ball = game
+    names = ("DISTANCE_SCALE_M", "CONTROL_RADIUS_M", "OUTSIDE_MARGIN_M", "STILL_MIN_S",
+             "VISIBLE_DEAD_EVIDENCE")
+    saved = [getattr(hp, name) for name in names]
     hp.DISTANCE_SCALE_M, hp.CONTROL_RADIUS_M = distance_scale, control_radius
     try:
-        labels = hp.predict(distances, missing_evidence=missing_is_dead, blocks=blocks)
+        extra = None
+        if visible_dead is not None:
+            hp.OUTSIDE_MARGIN_M, hp.STILL_MIN_S, hp.VISIBLE_DEAD_EVIDENCE = visible_dead
+            extra = np.zeros((len(distances), 3))
+            extra[:, hp.D] = hp.visible_ball_dead_evidence(
+                *hp.visible_dead_features(ball, PITCH, FPS))
+        labels = hp.predict(distances, missing_evidence=missing_is_dead, extra_evidence=extra,
+                            blocks=blocks)
     finally:
-        hp.DISTANCE_SCALE_M, hp.CONTROL_RADIUS_M = saved
+        for name, value in zip(names, saved):
+            setattr(hp, name, value)
     return pm.evaluate(gt_codes, pm.label_codes(labels))
+
+
+def print_row(label, results, mark):
+    spell = [r["spell_f1_mean"] for r in results]
+    print("{}   {:>7.4f} {:>7.4f} {:>7.4f}   {:>7.4f} {:>7.4f}   {:>5.2f}{}".format(
+        label, spell[0], spell[1], spell[2], np.mean(spell),
+        np.mean([r["macro_f1"] for r in results]),
+        sum(r["n_pred_spells"] for r in results) / float(sum(r["n_gt_spells"] for r in results)),
+        "   <- current" if mark else ""))
 
 
 if __name__ == '__main__':
@@ -188,7 +218,7 @@ if __name__ == '__main__':
     games = load_games(args.dir)
 
     print("label check: how often 'ball missing' and 'labelled dead' agree on graded frames")
-    for name, distances, codes, _ in games:
+    for name, distances, codes, _, _ in games:
         graded = codes != pm.X
         agree = np.mean(np.isnan(distances[graded, 0]) == (codes[graded] == pm.D))
         print("  {}  {:.1f}%   ({} graded frames)".format(name, 100.0 * agree, int(graded.sum())))
@@ -200,10 +230,21 @@ if __name__ == '__main__':
     for radius in CONTROL_RADII_M:
         for scale in DISTANCE_SCALES_M:
             results = [score(game, scale, radius) for game in games]
-            spell = [r["spell_f1_mean"] for r in results]
-            print("{:>8} {:>7.1f}   {:>7.4f} {:>7.4f} {:>7.4f}   {:>7.4f} {:>7.4f}   {:>5.2f}{}"
-                  .format("none" if radius is None else radius, scale, spell[0], spell[1],
-                          spell[2], np.mean(spell), np.mean([r["macro_f1"] for r in results]),
-                          sum(r["n_pred_spells"] for r in results)
-                          / float(sum(r["n_gt_spells"] for r in results)),
-                          "   <- current" if (scale, radius) == current else ""))
+            print_row("{:>8} {:>7.1f}".format("none" if radius is None else radius, scale),
+                      results, (scale, radius) == current)
+
+    # The visible-ball stoppage evidence, at the current radius and scale. This tracking shows a
+    # dead ball on very few frames, so the sweep cannot show the evidence helping. What it can
+    # show is harm: a setting that scores below the first row is breaking up live possessions.
+    current_dead = (hp.OUTSIDE_MARGIN_M, hp.STILL_MIN_S, hp.VISIBLE_DEAD_EVIDENCE)
+    print("\nvisible-ball stoppage evidence, same columns")
+    print("{:>8} {:>7} {:>8}".format("margin m", "still s", "evidence"))
+    print_row("{:>8} {:>7} {:>8}".format("off", "", ""),
+              [score(game, *current) for game in games], False)
+    for margin in OUTSIDE_MARGINS_M:
+        for still in STILL_MINIMA_S:
+            for evidence in VISIBLE_DEAD_EVIDENCES:
+                setting = (margin, still, evidence)
+                print_row("{:>8.1f} {:>7.1f} {:>8.2f}".format(*setting),
+                          [score(game, current[0], current[1], setting) for game in games],
+                          setting == current_dead)

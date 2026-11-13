@@ -26,7 +26,11 @@ Frames outside the two halves are written as `X`.
   and neither team gets evidence, so possession stays with the last team. Without this, a long
   pass travelling past opponents hands them the ball on the way.
 - **Dead ball with a visible ball.** Dead ball gets the better of the two team values minus 0.5,
-  so a visible ball is mild evidence that play is live.
+  so a visible ball is mild evidence that play is live. On top of that, dead ball gets 1.0 per
+  frame while the ball is more than 2 m off the pitch, or has stayed within 0.3 m of one spot for
+  3 s or longer. The two signs do not add up. With our transition costs, a ball off the pitch
+  must stay there for about 1.1 s before it can open a stoppage inside a possession. Without this
+  evidence the model can only call a stoppage when the ball disappears.
 - **Ball missing.** Neither team is favoured. Dead ball gets evidence that depends on the length
   of the whole missing-ball gap: none up to 2 s, then rising linearly to 0.3 per frame at 10 s.
   With our transition costs a gap must last about 5 s before it can split a possession.
@@ -69,8 +73,8 @@ provided files.
    at least 4 players, and the broadcast holds the ball for at least 1 s without interruption.
 
 Of 8,103 candidate frames, 5,605 pass and are used: 3.5% of graded frames. Ball coverage on graded
-frames rises from 59.3% to 62.8%. Compared with the same model without this step, 6,510 graded
-frames change label, 6,020 of them from dead ball to a team.
+frames rises from 59.3% to 62.8%. Compared with the same model without this step, 5,330 graded
+frames change label, 4,811 of them from dead ball to a team.
 
 ## Assets used
 
@@ -97,6 +101,16 @@ source, as that repository asks.
 - **Duration priors.** `measure_priors.py` derives possessions and stoppages from the events:
   938 possessions and 241 stoppages over the three games. The three transition numbers above are
   its output.
+- **Visible-ball stoppage evidence.** The sample tracking shows a dead ball on few frames, so it
+  cannot show this evidence helping; we used it to check for harm. A live ball is more than 2 m
+  off the pitch on at most 0.3% of frames in the three games. Stillness shorter than 3 s was
+  rejected because of what the events say: in games 1 and 2, of 13 still stretches of 1 to 2 s
+  that the event labels call live, 6 end in an ordinary pass, while of the 8 lasting
+  3 s or longer, 7 end at a goal kick and one at the end of a half. Those 8 are stoppages
+  that the event-derived labels count as live, so the labels penalise calling them dead. That is
+  why mean spellF1 on the sample games falls from 0.658 to 0.651 with this evidence switched on,
+  and why we accepted the fall. The size of the evidence makes no difference there between 0.75
+  and 2.0.
 - **Control radius and distance scale.** `tune_on_sample_games.py` derives per-frame labels from
   the same events, runs the model on the sample tracking and scores it with the official metric
   library. Without a control radius the best mean spellF1 over the three games was 0.586. With a
@@ -129,8 +143,9 @@ comparison on this match's tracking: 5,862 candidate frames are under 1 m, 1,739
   sustained evidence. While nobody is within 2 m of the ball, nothing changes. Once an opponent
   is within 2 m and 5 m closer to the ball than the team in possession, possession changes after
   about 0.4 s; larger advantages need proportionally less time.
-- **Dead ball.** A stretch is dead when the ball is missing for long enough, or when a set-piece
-  tag supports it. No team is assigned to a dead ball.
+- **Dead ball.** A stretch is dead when the ball is missing for long enough, when it lies off
+  the pitch or at rest for long enough, or when a set-piece tag supports it. No team is assigned
+  to a dead ball.
 - **Restarts.** A tagged set piece favours its team in the second half of the tagged window. The
   exact restart frame is left to the tracking.
 - **Abstention.** The model never writes `X` inside a half.
@@ -150,8 +165,13 @@ change possession.
   which recording is wrong. Inside a tactical gap there is no second opinion, so some of the
   positions we take over are false detections. One offset per half also leaves a timing error of
   a few frames.
-- **Dead ball with a visible ball.** When the ball is tracked during a stoppage, the model tends
-  to give it to the nearest team.
+- **Dead ball with a visible ball.** The model recognises a tracked ball as dead only when it is
+  well off the pitch or at rest for 3 s. That evidence is present on 5,064 graded frames, in 81
+  stretches. A ball carried to a throw-in, or rolling to a goalkeeper before a goal kick, is
+  still given to the nearest team. A goalkeeper standing with the ball for more than 3 s in
+  open play is wrongly called a stoppage. A high ball is projected onto the ground beyond where
+  it is, so one that hangs near a touchline for over a second can also open a false stoppage.
+  The benefit of this evidence is not measured on any labelled game.
 - **Being near the ball is not control.** The control radius removes evidence while the ball is
   out of reach, but a player who is within 2 m without touching the ball still counts, so a
   defender closing down a ball carrier can win it too early.

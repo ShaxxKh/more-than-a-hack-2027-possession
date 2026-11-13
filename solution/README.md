@@ -22,7 +22,8 @@ Unpack the match bundle into `data/` as [DATA.md](../DATA.md) describes, then:
 The first command writes `evaluation/results/solution_hmm.csv` in a few seconds. It is
 deterministic: the same data bundle always produces the same file, byte for byte. `--out` writes
 it somewhere else, `--no-tags` runs on tracking alone, without the Smart Tagging, and
-`--no-broadcast` uses the tactical ball only, without positions from the broadcast tracking.
+`--no-broadcast` uses the tactical ball only, without positions from the broadcast tracking, and
+`--no-visible-dead` stops a visible ball from counting towards a stoppage.
 
 ## Reproduce the settings
 
@@ -35,7 +36,8 @@ the Metrica sample data at a pinned commit into `data/external/`, which is not c
 ```
 
 The first prints the three duration priors used in `hmm_possession.py`. The second scores the
-model on the three sample games across a grid of control radii and distance scales.
+model on the three sample games across a grid of control radii and distance scales, and then
+across the settings of the visible-ball stoppage evidence.
 
 ## Tests
 
@@ -43,7 +45,7 @@ model on the three sample games across a grid of control radii and distance scal
 .venv/bin/python -m unittest discover -s solution
 ```
 
-47 tests, all on synthetic or hand-written inputs, so they run without any match data.
+56 tests, all on synthetic or hand-written inputs, so they run without any match data.
 
 ## Files
 

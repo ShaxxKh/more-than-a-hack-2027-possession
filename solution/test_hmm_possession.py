@@ -146,6 +146,79 @@ class ControlRadius(unittest.TestCase):
         self.assertTrue(np.all(path[100:125] == hp.H))  # still home's ball while it is in flight
 
 
+class VisibleDeadFeatures(unittest.TestCase):
+    PITCH = (100.0, 50.0)
+
+    def features(self, metres):
+        return hp.visible_dead_features(np.array(metres, dtype=float) / self.PITCH, self.PITCH, FPS)
+
+    def test_outside_is_metres_beyond_the_nearest_line_and_zero_on_the_pitch(self):
+        outside, _ = self.features([[50, 25], [-2, 25], [103, 25], [50, -1.5], [50, 54], [0, 0]])
+        self.assertTrue(np.allclose(outside, [0, 2, 3, 1.5, 4, 0]))
+
+    def test_a_resting_ball_is_still_for_as_long_as_it_rests(self):
+        rolling = [[20 + 0.4 * i, 25] for i in range(50)]
+        resting = [[40.0, 25.0]] * 75
+        _, still = self.features(rolling + resting + rolling)
+        self.assertTrue((still[:50] == 0).all())
+        self.assertTrue((still[-50:] == 0).all())
+        # the frames next to the rolling ball see it move inside their window
+        self.assertTrue(np.allclose(still[62:113], still[62]))
+        self.assertGreater(still[62], 2.0)
+        self.assertLessEqual(still[62], 3.0)
+
+    def test_jitter_inside_the_radius_is_still_and_a_slow_roll_is_not(self):
+        jitter = np.random.default_rng(3).uniform(-0.1, 0.1, (100, 2)) + [40, 25]
+        self.assertTrue((self.features(jitter)[1] > 0).all())
+        slow_roll = [[40 + 0.05 * i, 25] for i in range(100)]  # 1.25 m/s
+        self.assertTrue((self.features(slow_roll)[1] == 0).all())
+
+    def test_a_missing_ball_is_neither_outside_nor_still(self):
+        nan = [np.nan, np.nan]
+        outside, still = self.features([[-3, 25]] * 30 + [nan] * 30 + [[-3, 25]] * 30)
+        self.assertTrue((outside[30:60] == 0).all() and (still[30:60] == 0).all())
+        self.assertTrue(np.allclose(outside[:30], 3.0))
+        # the gap ends the stretch: two separate rests of 30 frames, not one of 90
+        self.assertTrue(np.allclose(still[:30], 30 / FPS) and np.allclose(still[60:], 30 / FPS))
+
+
+class VisibleDeadEvidence(unittest.TestCase):
+    def evidence(self, outside_m, still_s):
+        return float(hp.visible_ball_dead_evidence(np.array([outside_m]), np.array([still_s]))[0])
+
+    def test_a_moving_ball_on_the_pitch_says_nothing(self):
+        self.assertEqual(self.evidence(0.0, 0.0), 0.0)
+
+    def test_just_over_the_line_or_briefly_still_says_nothing(self):
+        self.assertEqual(self.evidence(hp.OUTSIDE_MARGIN_M / 2.0, 0.0), 0.0)
+        self.assertEqual(self.evidence(0.0, hp.STILL_MIN_S / 2.0), 0.0)
+
+    def test_either_sign_counts_and_both_together_count_once(self):
+        outside = self.evidence(hp.OUTSIDE_MARGIN_M + 1.0, 0.0)
+        still = self.evidence(0.0, hp.STILL_MIN_S + 1.0)
+        both = self.evidence(hp.OUTSIDE_MARGIN_M + 1.0, hp.STILL_MIN_S + 1.0)
+        self.assertGreater(outside, hp.VISIBLE_BALL_DEAD_COST)
+        self.assertEqual(outside, still)
+        self.assertEqual(outside, both)
+
+    def decode(self, seconds_stopped):
+        """Home on the ball, the ball then rests beside a home player, then home plays on."""
+        stopped = int(seconds_stopped * FPS)
+        distances = np.tile([1.0, 20.0], (20 * FPS + stopped, 1))
+        extra = np.zeros((len(distances), 3))
+        extra[10 * FPS:10 * FPS + stopped, hp.D] = hp.VISIBLE_DEAD_EVIDENCE
+        return hp.predict(distances, missing_evidence=no_opinion, extra_evidence=extra,
+                          blocks=[(0, len(distances) - 1)])
+
+    def test_a_ball_at_rest_beside_a_player_becomes_a_stoppage(self):
+        labels = self.decode(4.0)
+        self.assertTrue((labels[10 * FPS:14 * FPS] == "D").all())
+        self.assertTrue((labels[:10 * FPS] == "H").all() and (labels[14 * FPS:] == "H").all())
+
+    def test_half_a_second_at_rest_does_not(self):
+        self.assertTrue((self.decode(0.5) == "H").all())
+
+
 class Viterbi(unittest.TestCase):
     def test_one_frame_of_noise_does_not_end_a_possession(self):
         states = np.full(200, hp.H, dtype=np.int8)
