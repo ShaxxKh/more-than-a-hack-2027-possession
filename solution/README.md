@@ -21,7 +21,8 @@ Unpack the match bundle into `data/` as [DATA.md](../DATA.md) describes, then:
 
 The first command writes `evaluation/results/solution_hmm.csv` in a few seconds. It is
 deterministic: the same data bundle always produces the same file, byte for byte. `--out` writes
-it somewhere else, and `--no-tags` runs on tracking alone, without the Smart Tagging.
+it somewhere else, `--no-tags` runs on tracking alone, without the Smart Tagging, and
+`--no-broadcast` uses the tactical ball only, without positions from the broadcast tracking.
 
 ## Reproduce the settings
 
@@ -42,13 +43,14 @@ model on the three sample games across a grid of control radii and distance scal
 .venv/bin/python -m unittest discover -s solution
 ```
 
-27 tests, all on synthetic or hand-written inputs, so they run without any match data.
+47 tests, all on synthetic or hand-written inputs, so they run without any match data.
 
 ## Files
 
 | file | what it does |
 |---|---|
 | `hmm_possession.py` | the model: evidence, transitions, Viterbi, and the command that writes the file |
+| `broadcast_ball.py` | aligns the broadcast tracking to the tactical timeline and supplies ball positions the tactical tracking lacks |
 | `measure_priors.py` | measures possession and stoppage durations on other games |
 | `tune_on_sample_games.py` | scores the model on other games with the official metric |
 | `test_*.py` | tests |

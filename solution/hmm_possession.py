@@ -23,10 +23,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "starter"))
+sys.path.insert(0, HERE)
 from games import GAME, GAMES, half_video_blocks, require, source_frames  # noqa: E402
 from baseline import (FIELD_SEP, GROUP_SEP, MISSING, RESULTS_DIR,  # noqa: E402
                       team_names, team_of_each_track, write_submission)
 import load_smart_tagging  # noqa: E402
+import broadcast_ball  # noqa: E402
 
 H, A, D = 0, 1, 2
 LABELS = np.array(["H", "A", "D"])
@@ -71,10 +73,12 @@ NO_TEAM = "n/a"
 GENERIC_NAME_WORDS = {"fc", "cf", "club", "de", "sc", "ac", "cd", "ud", "rcd", "the"}
 
 
-def nearest_by_team(raw_path, team_of_track, n_frames, pitch):
+def nearest_by_team(raw_path, team_of_track, n_frames, pitch, ball_fill=None):
     """(n_frames, 2) metres from the ball to the nearest home and away track.
 
     NaN on both columns where the ball is not visible, inf where a team has no visible track.
+    ball_fill, if given, is (n_frames, 2) normalised ball positions from another source, used
+    only on frames where this file has no ball; NaN there means no position from it either.
     """
     length, width = pitch
     out = np.full((n_frames, 2), np.nan)
@@ -82,10 +86,15 @@ def nearest_by_team(raw_path, team_of_track, n_frames, pitch):
     with open(raw_path) as handle:
         for line in handle:
             parts = line.split(FIELD_SEP)
-            if len(parts) != 3 or parts[2][0] == MISSING:
+            if len(parts) != 3:
                 continue
 
-            ball_x, ball_y = [float(v) for v in parts[2].split(",")[:2]]
+            if parts[2][0] != MISSING:
+                ball_x, ball_y = [float(v) for v in parts[2].split(",")[:2]]
+            elif ball_fill is not None and not np.isnan(ball_fill[int(parts[0]) - 1, 0]):
+                ball_x, ball_y = ball_fill[int(parts[0]) - 1]
+            else:
+                continue
             nearest = [np.inf, np.inf]
             for slot, group in enumerate(parts[1].split(GROUP_SEP)):
                 if group[0] == MISSING:
@@ -243,12 +252,34 @@ if __name__ == '__main__':
                         help="where to write the submission")
     parser.add_argument("--no-tags", action="store_true",
                         help="tracking only, without the Smart Tagging restarts")
+    parser.add_argument("--no-broadcast", action="store_true",
+                        help="tactical ball only, without positions from the broadcast tracking")
     args = parser.parse_args()
 
     meta_path, raw_path = require(["atd_meta", "atd_raw"], GAME)
     n_frames = source_frames("tactical", GAME)
-    distances = nearest_by_team(raw_path, team_of_each_track(meta_path), n_frames,
-                                GAMES[GAME]["pitch"])
+    pitch = GAMES[GAME]["pitch"]
+    team_of_track = team_of_each_track(meta_path)
+
+    ball_fill = None
+    if not args.no_broadcast:
+        other_meta, other_raw, other_homography = require(
+            ["atd_meta", "atd_raw", "homography"], GAME, source="broadcast")
+        other_team = team_of_each_track(other_meta)
+        ball, players = broadcast_ball.read_tracks(raw_path, n_frames, len(team_of_track))
+        other_ball, other_players = broadcast_ball.read_tracks(
+            other_raw, source_frames("broadcast", GAME), len(other_team))
+        ball_fill, report = broadcast_ball.fill_from_broadcast(
+            ball, players, team_of_track, other_ball, other_players, other_team,
+            broadcast_ball.read_valid(other_homography),
+            [(first, last) for _, first, last in half_video_blocks(GAME)], pitch,
+            GAMES[GAME]["fps"])
+        for block in report:
+            print("frames {first}-{last}: tactical frame = broadcast frame + {offset}, agreeing on "
+                  "{agreement:.0%} of shared ball frames; kept {kept} of {candidates} positions"
+                  .format(**block))
+
+    distances = nearest_by_team(raw_path, team_of_track, n_frames, pitch, ball_fill)
 
     extra = None
     if not args.no_tags:
