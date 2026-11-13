@@ -48,8 +48,8 @@ HOME_NAMES = {"Home", "Team A"}  # Team A is listed first in game 3's metadata
 # In this corrected tracking a missing ball means a dead ball, so say so firmly.
 MISSING_MEANS_DEAD = 1.0
 
-DISTANCE_SCALES_M = (1.0, 2.0, 4.0, 8.0, 12.0, 16.0, 32.0)
-MAX_DISTANCES_M = (15.0, 30.0, 60.0)
+DISTANCE_SCALES_M = (2.0, 4.0, 8.0, 12.0, 16.0)
+CONTROL_RADII_M = (None, 5.0, 3.0, 2.0, 1.5, 1.0)  # None = no radius, distance always counts
 
 
 def fetch(folder):
@@ -165,15 +165,15 @@ def missing_is_dead(gap_seconds):
     return out
 
 
-def score(game, distance_scale, max_distance):
+def score(game, distance_scale, control_radius):
     """The official metrics for one game at one setting."""
     _, distances, gt_codes, blocks = game
-    saved = hp.DISTANCE_SCALE_M, hp.MAX_DISTANCE_M
-    hp.DISTANCE_SCALE_M, hp.MAX_DISTANCE_M = distance_scale, max_distance
+    saved = hp.DISTANCE_SCALE_M, hp.CONTROL_RADIUS_M
+    hp.DISTANCE_SCALE_M, hp.CONTROL_RADIUS_M = distance_scale, control_radius
     try:
         labels = hp.predict(distances, missing_evidence=missing_is_dead, blocks=blocks)
     finally:
-        hp.DISTANCE_SCALE_M, hp.MAX_DISTANCE_M = saved
+        hp.DISTANCE_SCALE_M, hp.CONTROL_RADIUS_M = saved
     return pm.evaluate(gt_codes, pm.label_codes(labels))
 
 
@@ -193,17 +193,17 @@ if __name__ == '__main__':
         agree = np.mean(np.isnan(distances[graded, 0]) == (codes[graded] == pm.D))
         print("  {}  {:.1f}%   ({} graded frames)".format(name, 100.0 * agree, int(graded.sum())))
 
-    current = (hp.DISTANCE_SCALE_M, hp.MAX_DISTANCE_M)
+    current = (hp.DISTANCE_SCALE_M, hp.CONTROL_RADIUS_M)
     print("\nspellF1 per game; poss = predicted possessions / true possessions, all games")
-    print("{:>7} {:>5}   {:>7} {:>7} {:>7}   {:>7} {:>7}   {:>5}".format(
-        "scale m", "max m", "game 1", "game 2", "game 3", "mean", "macroF1", "poss"))
-    for max_distance in MAX_DISTANCES_M:
+    print("{:>8} {:>7}   {:>7} {:>7} {:>7}   {:>7} {:>7}   {:>5}".format(
+        "radius m", "scale m", "game 1", "game 2", "game 3", "mean", "macroF1", "poss"))
+    for radius in CONTROL_RADII_M:
         for scale in DISTANCE_SCALES_M:
-            results = [score(game, scale, max_distance) for game in games]
+            results = [score(game, scale, radius) for game in games]
             spell = [r["spell_f1_mean"] for r in results]
-            print("{:>7.1f} {:>5.0f}   {:>7.4f} {:>7.4f} {:>7.4f}   {:>7.4f} {:>7.4f}   {:>5.2f}{}"
-                  .format(scale, max_distance, spell[0], spell[1], spell[2], np.mean(spell),
-                          np.mean([r["macro_f1"] for r in results]),
+            print("{:>8} {:>7.1f}   {:>7.4f} {:>7.4f} {:>7.4f}   {:>7.4f} {:>7.4f}   {:>5.2f}{}"
+                  .format("none" if radius is None else radius, scale, spell[0], spell[1],
+                          spell[2], np.mean(spell), np.mean([r["macro_f1"] for r in results]),
                           sum(r["n_pred_spells"] for r in results)
                           / float(sum(r["n_gt_spells"] for r in results)),
-                          "   <- current" if (scale, max_distance) == current else ""))
+                          "   <- current" if (scale, radius) == current else ""))

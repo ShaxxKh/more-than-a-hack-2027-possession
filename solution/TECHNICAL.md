@@ -19,10 +19,14 @@ Frames outside the two halves are written as `X`.
 
 ### Evidence per frame
 
-- **Ball visible.** For each team we take the distance in metres from the ball to its nearest
-  tracked player, capped at 30 m. The log evidence for a team is minus that distance divided by a
-  scale of 12 m. Dead ball gets the better of the two team values minus 0.5, so a visible ball is
-  mild evidence that play is live.
+- **Ball visible, within reach.** For each team we take the distance in metres from the ball to
+  its nearest tracked player, capped at 30 m. When at least one player is within a control radius
+  of 2 m, the log evidence for a team is minus its distance divided by a scale of 8 m.
+- **Ball visible, out of reach.** When no player is within 2 m, the ball is in flight or loose
+  and neither team gets evidence, so possession stays with the last team. Without this, a long
+  pass travelling past opponents hands them the ball on the way.
+- **Dead ball with a visible ball.** Dead ball gets the better of the two team values minus 0.5,
+  so a visible ball is mild evidence that play is live.
 - **Ball missing.** Neither team is favoured. Dead ball gets evidence that depends on the length
   of the whole missing-ball gap: none up to 2 s, then rising linearly to 0.3 per frame at 10 s.
   With our transition costs a gap must last about 5 s before it can split a possession.
@@ -35,6 +39,9 @@ Frames outside the two halves are written as `X`.
 A possession lasts 12.7 s on average and a stoppage 21.1 s, and 74% of possessions end with the
 other team rather than with a stoppage. These give a turnover a cost of about 6.1 units of log
 evidence and a possession, stoppage, possession sequence a cost of about 14.1.
+
+Through a stretch with no evidence, every frame is an equally good place for a change. We date
+the change to the last such frame, which is when the next player receives the ball.
 
 ## Assets used
 
@@ -60,10 +67,12 @@ source, as that repository asks.
 - **Duration priors.** `measure_priors.py` derives possessions and stoppages from the events:
   938 possessions and 241 stoppages over the three games. The three transition numbers above are
   its output.
-- **Distance scale.** `tune_on_sample_games.py` derives per-frame labels from the same events,
-  runs the model on the sample tracking and scores it with the official metric library. We moved
-  the scale from an initial 8 m to 12 m, the largest value at which all three games improved
-  (mean spellF1 0.554 to 0.586). The gain is small and close to the metric's noise level.
+- **Control radius and distance scale.** `tune_on_sample_games.py` derives per-frame labels from
+  the same events, runs the model on the sample tracking and scores it with the official metric
+  library. Without a control radius the best mean spellF1 over the three games was 0.586. With a
+  2 m radius and an 8 m scale it is 0.658 (0.667, 0.710 and 0.598 per game), and every game
+  improves. That setting sits in the middle of a stable region, 1.5 to 3 m, and kept its lead
+  when we added random noise of up to 2 m to the distances.
 
 Nothing from the provided game was labelled by hand, and no label of the provided game was used
 to choose a setting. The public 5-minute ground truth was used only to check that the pipeline
@@ -81,9 +90,9 @@ events.
 
 - **Three states only.** Every frame inside a half is `H`, `A` or `D`.
 - **Loose and contested balls.** Possession stays with the last team until the other team has
-  sustained evidence. With the settings above, a player who is 5 m closer to the ball than any
-  opponent must stay so for about 0.6 s before possession changes; larger advantages need
-  proportionally less time.
+  sustained evidence. While nobody is within 2 m of the ball, nothing changes. Once an opponent
+  is within 2 m and 5 m closer to the ball than the team in possession, possession changes after
+  about 0.4 s; larger advantages need proportionally less time.
 - **Dead ball.** A stretch is dead when the ball is missing for long enough, or when a set-piece
   tag supports it. No team is assigned to a dead ball.
 - **Restarts.** A tagged set piece favours its team in the second half of the tagged window. The
@@ -100,8 +109,9 @@ change possession.
   weakest. Its handling rests on untested judgement values.
 - **Dead ball with a visible ball.** When the ball is tracked during a stoppage, the model tends
   to give it to the nearest team.
-- **Nearest player is not control.** Proximity changes before a player controls the ball, so
-  changes can be called early, and a player running past the ball can win it briefly.
+- **Being near the ball is not control.** The control radius removes evidence while the ball is
+  out of reach, but a player who is within 2 m without touching the ball still counts, so a
+  defender closing down a ball carrier can win it too early.
 - **No trajectories or identities.** Ball speed and direction, player speed, and track continuity
   are ignored.
 - **Durations.** A hidden Markov model implies geometrically distributed durations, which real

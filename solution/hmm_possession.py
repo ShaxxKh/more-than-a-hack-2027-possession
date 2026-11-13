@@ -38,9 +38,17 @@ MEAN_POSSESSION_S = 12.7
 MEAN_STOPPAGE_S = 21.1
 TURNOVER_SHARE = 0.74  # share of possessions that end with the other team, not a stoppage
 
-# Chosen on other games with solution/tune_on_sample_games.py: 12 m is the largest scale at
-# which all three sample games score better than at the original guess of 8 m.
-DISTANCE_SCALE_M = 12.0  # metres of distance advantage worth one unit of log evidence
+# Distance only says who has the ball while somebody can actually play it. Outside
+# CONTROL_RADIUS_M of every player the ball is in flight or loose, neither team gets evidence, and
+# possession stays with the last team -- the rule CHALLENGE.md gives for loose and contested
+# balls. Without this a long pass travelling past opponents hands them the ball on the way.
+#
+# Both values chosen on other games with solution/tune_on_sample_games.py: every sample game
+# scores better with the radius than without, and 2 m with an 8 m scale sits in the middle of a
+# stable region (1.5 to 3 m) and holds up when noise is added to the distances.
+CONTROL_RADIUS_M = 2.0  # None switches the radius off
+TIE_BREAK = 1e-6  # far below any real evidence, far above floating-point rounding
+DISTANCE_SCALE_M = 8.0  # metres of distance advantage worth one unit of log evidence
 MAX_DISTANCE_M = 30.0  # beyond this a player is simply "far", however far
 VISIBLE_BALL_DEAD_COST = 0.5  # a visible ball is mild evidence that play is alive
 
@@ -119,9 +127,12 @@ def log_emissions(distances, fps, missing_evidence=missing_ball_log_evidence):
     out = np.empty((len(distances), 3))
 
     capped = np.minimum(distances[seen], MAX_DISTANCE_M)
-    out[seen, H] = -capped[:, H] / DISTANCE_SCALE_M
-    out[seen, A] = -capped[:, A] / DISTANCE_SCALE_M
-    out[seen, D] = -capped.min(axis=1) / DISTANCE_SCALE_M - VISIBLE_BALL_DEAD_COST
+    team = -capped / DISTANCE_SCALE_M
+    if CONTROL_RADIUS_M is not None:
+        team[capped.min(axis=1) > CONTROL_RADIUS_M] = 0.0  # nobody can play it: no opinion
+    out[seen, H] = team[:, H]
+    out[seen, A] = team[:, A]
+    out[seen, D] = team.max(axis=1) - VISIBLE_BALL_DEAD_COST
 
     missing = ~seen
     out[missing] = missing_evidence(gap_lengths(missing)[missing] / float(fps))
@@ -178,7 +189,13 @@ def log_transitions(fps):
 
 
 def viterbi(log_emit, log_trans):
-    """Most likely state sequence. Ties resolve to the lowest state index, so it is deterministic."""
+    """Most likely state sequence, deterministic.
+
+    Through a stretch with no evidence -- the ball in flight, outside every control radius --
+    every frame is an equally good place for a change of state, and rounding error would pick
+    one. TIE_BREAK settles it: the change lands on the last such frame, which is when the next
+    player receives the ball.
+    """
     n_frames = len(log_emit)
     path = np.empty(n_frames, dtype=np.int8)
     if not n_frames:
@@ -186,9 +203,10 @@ def viterbi(log_emit, log_trans):
 
     back = np.zeros((n_frames, 3), dtype=np.int8)
     score = log_emit[0] - np.log(3.0)
+    prefer_change = TIE_BREAK * (1.0 - np.eye(3))
     for frame in range(1, n_frames):
         candidates = score[:, np.newaxis] + log_trans
-        back[frame] = candidates.argmax(axis=0)
+        back[frame] = (candidates + prefer_change).argmax(axis=0)
         score = candidates.max(axis=0) + log_emit[frame]
 
     path[-1] = score.argmax()

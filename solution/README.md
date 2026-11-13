@@ -34,7 +34,7 @@ the Metrica sample data at a pinned commit into `data/external/`, which is not c
 ```
 
 The first prints the three duration priors used in `hmm_possession.py`. The second scores the
-model on the three sample games across a grid of distance settings.
+model on the three sample games across a grid of control radii and distance scales.
 
 ## Tests
 
@@ -42,7 +42,7 @@ model on the three sample games across a grid of distance settings.
 .venv/bin/python -m unittest discover -s solution
 ```
 
-24 tests, all on synthetic or hand-written inputs, so they run without any match data.
+27 tests, all on synthetic or hand-written inputs, so they run without any match data.
 
 ## Files
 

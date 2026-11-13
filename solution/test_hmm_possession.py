@@ -119,6 +119,33 @@ class SmartTagging(unittest.TestCase):
         self.assertEqual(path[-1], hp.H)
 
 
+class ControlRadius(unittest.TestCase):
+    @staticmethod
+    def decode(distances):
+        return hp.viterbi(hp.log_emissions(np.array(distances, dtype=float), FPS),
+                          hp.log_transitions(FPS))
+
+    def test_a_pass_travelling_past_opponents_stays_with_the_passing_team(self):
+        # Home on the ball, then 2 s of flight during which away players are 10 m closer but
+        # nobody is within reach, then home on the ball again.
+        path = self.decode([[1.0, 15.0]] * 100 + [[18.0, 8.0]] * 50 + [[1.0, 15.0]] * 100)
+        self.assertTrue(np.all(path == hp.H))
+
+    def test_without_the_radius_the_same_pass_changes_hands(self):
+        saved, hp.CONTROL_RADIUS_M = hp.CONTROL_RADIUS_M, None
+        try:
+            path = self.decode([[1.0, 15.0]] * 100 + [[18.0, 8.0]] * 50 + [[1.0, 15.0]] * 100)
+        finally:
+            hp.CONTROL_RADIUS_M = saved
+        self.assertTrue(np.any(path == hp.A))
+
+    def test_an_opponent_who_controls_the_ball_takes_possession(self):
+        path = self.decode([[1.0, 15.0]] * 100 + [[18.0, 8.0]] * 25 + [[12.0, 1.0]] * 100)
+        self.assertEqual(path[0], hp.H)
+        self.assertEqual(path[-1], hp.A)
+        self.assertTrue(np.all(path[100:125] == hp.H))  # still home's ball while it is in flight
+
+
 class Viterbi(unittest.TestCase):
     def test_one_frame_of_noise_does_not_end_a_possession(self):
         states = np.full(200, hp.H, dtype=np.int8)
